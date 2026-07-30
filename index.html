@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Expense Tracker</title>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+
+  <!-- Font Awesome 6 -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+
+  <!-- Chart.js -->
+  <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+
+  <!-- jsPDF -->
+  <script defer src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ===== Toast Container ===== -->
+  <div class="toast-container" id="toastContainer" role="status" aria-live="polite"></div>
+
+  <!-- ===== Delete Confirmation Modal ===== -->
+  <div class="modal-overlay" id="confirmModal" role="dialog" aria-modal="true" aria-hidden="true">
+    <div class="modal">
+      <div class="modal-icon"><i class="fas fa-exclamation-triangle"></i></div>
+      <h3 class="modal-title">Delete Transaction?</h3>
+      <p class="modal-text">This action cannot be undone.</p>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" data-confirm-cancel>Cancel</button>
+        <button class="btn btn-danger" data-confirm-delete>Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Edit Transaction Modal ===== -->
+  <div class="modal-overlay" id="editModal" role="dialog" aria-modal="true" aria-hidden="true">
+    <div class="modal modal--wide">
+      <div class="modal-header">
+        <h3 class="modal-title">Edit Transaction</h3>
+        <button class="btn-icon" data-edit-close aria-label="Close"><i class="fas fa-times"></i></button>
+      </div>
+      <form id="editForm" novalidate>
+        <div class="field">
+          <label for="editName">Name</label>
+          <input type="text" id="editName" required />
+          <span class="field-error" id="editNameError" role="alert"></span>
+        </div>
+        <div class="field">
+          <label for="editAmount">Amount (PKR)</label>
+          <input type="number" id="editAmount" min="0" step="0.01" required />
+          <span class="field-error" id="editAmountError" role="alert"></span>
+        </div>
+        <div class="field">
+          <label for="editCategory">Category</label>
+          <select id="editCategory">
+            <option value="Food">Food</option>
+            <option value="Shopping">Shopping</option>
+            <option value="Bills">Bills</option>
+            <option value="Salary">Salary</option>
+            <option value="Transport">Transport</option>
+            <option value="Entertainment">Entertainment</option>
+            <option value="Healthcare">Healthcare</option>
+            <option value="Education">Education</option>
+            <option value="Others">Others</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="editDate">Date</label>
+          <input type="date" id="editDate" required />
+        </div>
+        <div class="field">
+          <label>Type</label>
+          <div class="type-toggle">
+            <label class="type-option">
+              <input type="radio" name="editType" value="income" />
+              <span class="type-label income-label"><i class="fas fa-arrow-up"></i> Income</span>
+            </label>
+            <label class="type-option">
+              <input type="radio" name="editType" value="expense" />
+              <span class="type-label expense-label"><i class="fas fa-arrow-down"></i> Expense</span>
+            </label>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn btn-ghost" data-edit-cancel>Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Changes</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ===== Navbar ===== -->
+  <header class="navbar">
+    <div class="navbar-inner">
+      <div class="navbar-brand">
+        <i class="fas fa-wallet"></i>
+        <span class="brand-text">ExpenseTracker</span>
+      </div>
+      <nav class="navbar-actions">
+        <button class="btn-icon" id="exportCSV" aria-label="Export CSV" title="Export CSV">
+          <i class="fas fa-file-csv"></i>
+        </button>
+        <button class="btn-icon" id="exportPDF" aria-label="Export PDF" title="Export PDF">
+          <i class="fas fa-file-pdf"></i>
+        </button>
+        <button class="btn-icon" id="themeToggle" aria-label="Toggle theme" title="Toggle theme">
+          <i class="fas fa-moon"></i>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="app-shell">
+
+    <!-- ===== Dashboard ===== -->
+    <section class="dashboard" aria-label="Financial summary">
+      <div class="summary-card summary-card--balance">
+        <div class="summary-icon"><i class="fas fa-wallet"></i></div>
+        <div class="summary-body">
+          <p class="summary-label">Total Balance</p>
+          <p class="summary-value" id="balanceDisplay">PKR 0</p>
+        </div>
+      </div>
+      <div class="summary-card summary-card--income">
+        <div class="summary-icon"><i class="fas fa-arrow-down"></i></div>
+        <div class="summary-body">
+          <p class="summary-label">Total Income</p>
+          <p class="summary-value" id="incomeDisplay">PKR 0</p>
+        </div>
+      </div>
+      <div class="summary-card summary-card--expense">
+        <div class="summary-icon"><i class="fas fa-arrow-up"></i></div>
+        <div class="summary-body">
+          <p class="summary-label">Total Expense</p>
+          <p class="summary-value" id="expenseDisplay">PKR 0</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== Add Transaction Form ===== -->
+    <section class="card" aria-label="Add a transaction">
+      <h2 class="section-title"><i class="fas fa-plus-circle"></i> Add Transaction</h2>
+      <form id="transactionForm" novalidate>
+        <div class="form-row">
+          <div class="field">
+            <label for="nameInput">Name <span aria-hidden="true">*</span></label>
+            <input type="text" id="nameInput" placeholder="e.g. Groceries" autocomplete="off" required />
+            <span class="field-error" id="nameError" role="alert"></span>
+          </div>
+          <div class="field">
+            <label for="amountInput">Amount (PKR) <span aria-hidden="true">*</span></label>
+            <input type="number" id="amountInput" placeholder="e.g. 1500" min="0" step="0.01" required />
+            <span class="field-error" id="amountError" role="alert"></span>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="field">
+            <label for="categoryInput">Category</label>
+            <select id="categoryInput">
+              <option value="Food">Food</option>
+              <option value="Shopping">Shopping</option>
+              <option value="Bills">Bills</option>
+              <option value="Salary">Salary</option>
+              <option value="Transport">Transport</option>
+              <option value="Entertainment">Entertainment</option>
+              <option value="Healthcare">Healthcare</option>
+              <option value="Education">Education</option>
+              <option value="Others">Others</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="dateInput">Date</label>
+            <input type="date" id="dateInput" />
+          </div>
+        </div>
+        <div class="field">
+          <label>Type</label>
+          <div class="type-toggle">
+            <label class="type-option">
+              <input type="radio" name="type" value="income" checked />
+              <span class="type-label income-label"><i class="fas fa-arrow-up"></i> Income</span>
+            </label>
+            <label class="type-option">
+              <input type="radio" name="type" value="expense" />
+              <span class="type-label expense-label"><i class="fas fa-arrow-down"></i> Expense</span>
+            </label>
+          </div>
+        </div>
+        <button type="submit" class="btn btn-primary btn-block btn-ripple">
+          <i class="fas fa-plus"></i> Add Transaction
+        </button>
+      </form>
+    </section>
+
+    <!-- ===== Income Goal ===== -->
+    <section class="card" aria-label="Monthly income goal">
+      <h2 class="section-title"><i class="fas fa-bullseye"></i> Income Goal</h2>
+      <div class="budget-info">
+        <span id="incomeEarned">PKR 0</span>
+        <span>of <strong id="incomeGoalDisplay">PKR 0</strong></span>
+        <span id="incomeGoalPercent">0%</span>
+      </div>
+      <div class="budget-bar" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+        <div class="budget-fill budget-fill--income" id="incomeGoalFill" style="width: 0%"></div>
+      </div>
+      <div class="budget-edit-row">
+        <label for="incomeGoalInput">Monthly target:</label>
+        <input type="number" id="incomeGoalInput" min="0" value="100000" />
+        <button class="btn btn-sm btn-ghost" id="incomeGoalSetBtn">Set</button>
+      </div>
+    </section>
+
+    <!-- ===== Budget Progress ===== -->
+    <section class="card" aria-label="Monthly budget">
+      <h2 class="section-title"><i class="fas fa-chart-pie"></i> Monthly Budget</h2>
+      <div class="budget-info">
+        <span id="budgetSpent">PKR 0</span>
+        <span>of <strong id="budgetLimit">PKR 50,000</strong></span>
+        <span id="budgetPercent">0%</span>
+      </div>
+      <div class="budget-bar" role="progressbar" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+        <div class="budget-fill" id="budgetFill" style="width: 0%"></div>
+      </div>
+      <div class="budget-edit-row">
+        <label for="budgetLimitInput">Monthly limit:</label>
+        <input type="number" id="budgetLimitInput" min="0" value="50000" />
+        <button class="btn btn-sm btn-ghost" id="budgetSetBtn">Set</button>
+      </div>
+    </section>
+
+    <!-- ===== Search, Filter & Sort ===== -->
+    <section class="card" aria-label="Search and filter transactions">
+      <div class="toolbar">
+        <div class="search-wrap">
+          <i class="fas fa-search search-icon"></i>
+          <input type="text" id="searchInput" placeholder="Search transactions..." autocomplete="off" />
+        </div>
+        <div class="toolbar-actions">
+          <select id="filterType" aria-label="Filter by type">
+            <option value="all">All</option>
+            <option value="income">Income</option>
+            <option value="expense">Expense</option>
+          </select>
+          <select id="filterCategory" aria-label="Filter by category">
+            <option value="all">All Categories</option>
+            <option value="Food">Food</option>
+            <option value="Shopping">Shopping</option>
+            <option value="Bills">Bills</option>
+            <option value="Salary">Salary</option>
+            <option value="Transport">Transport</option>
+            <option value="Entertainment">Entertainment</option>
+            <option value="Healthcare">Healthcare</option>
+            <option value="Education">Education</option>
+            <option value="Others">Others</option>
+          </select>
+          <select id="filterPeriod" aria-label="Filter by period">
+            <option value="all">All Time</option>
+            <option value="today">Today</option>
+            <option value="week">This Week</option>
+            <option value="month">This Month</option>
+          </select>
+          <select id="sortBy" aria-label="Sort by">
+            <option value="date-desc">Newest First</option>
+            <option value="date-asc">Oldest First</option>
+            <option value="amount-desc">Highest Amount</option>
+            <option value="amount-asc">Lowest Amount</option>
+          </select>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== Transaction History ===== -->
+    <section class="card" aria-label="Transaction history">
+      <h2 class="section-title"><i class="fas fa-list"></i> Transactions</h2>
+      <div class="transaction-count" id="transactionCount">0 transactions</div>
+      <ul class="transaction-list" id="transactionList" aria-label="List of transactions">
+        <!-- Populated by JavaScript -->
+      </ul>
+    </section>
+
+    <!-- ===== Charts ===== -->
+    <section class="charts-grid" aria-label="Charts and analytics">
+      <div class="card">
+        <h3 class="section-title"><i class="fas fa-chart-pie"></i> Expenses by Category</h3>
+        <div class="chart-wrap">
+          <canvas id="pieChart"></canvas>
+        </div>
+        <p class="chart-empty" id="pieEmpty">No expense data yet.</p>
+      </div>
+      <div class="card">
+        <h3 class="section-title"><i class="fas fa-chart-bar"></i> Monthly Income vs Expenses</h3>
+        <div class="chart-wrap">
+          <canvas id="barChart"></canvas>
+        </div>
+        <p class="chart-empty" id="barEmpty">No data for this month yet.</p>
+      </div>
+    </section>
+
+  </main>
+
+  <script defer src="script.js"></script>
+</body>
+</html>
