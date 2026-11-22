@@ -27,6 +27,31 @@ A browser-based expense tracker with a static HTML/CSS/JavaScript frontend, an E
 
 The local `api-config.js` points the browser to the backend on port 3000. The backend's `FRONTEND_URL` must allow the origin used by the static server.
 
+## GitHub Actions CI/CD
+
+The `.github/workflows/ci-cd.yml` workflow runs on pushes to `main`, pull requests targeting `main`, and manual dispatch:
+
+- The validation job uses Node.js 22, checks the static frontend JavaScript syntax, installs backend dependencies from `backend/package-lock.json`, runs the Vitest suite, generates Prisma Client with placeholder CI database URLs, and compiles the TypeScript backend.
+- The Docker job builds the existing frontend and backend Dockerfiles with Buildx after validation succeeds. Pull requests build both images without publishing them. Pushes to `main` publish both images with `latest` and the full commit SHA tags. A manual run publishes only when dispatched on `main`.
+- The frontend is static HTML/CSS/JavaScript and has no separate package manifest or frontend test runner. CI syntax-checks its JavaScript and validates it through the production Docker build.
+- Docker builds do not need Supabase credentials and do not run database migrations.
+
+Add these repository secrets under **Settings → Secrets and variables → Actions** before publishing:
+
+| Secret | Value |
+| --- | --- |
+| `DOCKERHUB_USERNAME` | Docker Hub account username |
+| `DOCKERHUB_TOKEN` | Docker Hub access token with permission to push to both repositories |
+
+Images are published to:
+
+- `svedant/expensetracker-frontend`
+- `svedant/expensetracker-backend`
+
+To run manually, open the repository's **Actions** tab, choose **CI/CD**, select **Run workflow**, and choose the desired branch. To inspect a run, select it in **Actions** and open the failed job or step for its logs. Pull requests never publish images.
+
+If a run fails, first inspect the failing step's logs. Check that the backend lockfile is committed and matches `package.json`, and that tests/builds pass locally with Node.js 22. For Docker Hub authentication or push failures on `main`, verify both repository secrets and the token's write access to each image repository. Docker build failures should be reproducible with `docker build -f frontend/Dockerfile .` or `docker build -f backend/Dockerfile ./backend`; the pipeline does not require `.env` files or Supabase secrets.
+
 ## Docker Compose
 
 ### Architecture
