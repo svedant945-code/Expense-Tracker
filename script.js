@@ -1,11 +1,16 @@
 "use strict";
 
 /* ============================================================
-   Expense Tracker — Application Logic
+   Expense Tracker — Application Logic (Backend API Version)
    ============================================================ */
 
 /* ===== Configuration ===== */
 const STORAGE_KEY = "expense-tracker-premium";
+const API_BASE = "http://localhost:3000/api/v1";
+
+let authToken = null;
+let isOnline = true;
+
 const CATEGORY_ICONS = {
   Food: "fa-utensils",
   Shopping: "fa-bag-shopping",
@@ -73,26 +78,405 @@ const exportPDF = $("#exportPDF");
 
 /* ===== State ===== */
 let transactions = [];
+let categories = [];
 let deleteTargetId = null;
 let editTargetId = null;
 let pieChartInstance = null;
 let barChartInstance = null;
 
-/* ===== Local Storage ===== */
+/* ===== API Helpers ===== */
 
-function loadData() {
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    const parsed = stored ? JSON.parse(stored) : [];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (e) {
-    console.warn("Load error:", e);
-    return [];
+async function apiRequest(endpoint, options = {}) {
+  const headers = {
+    "Content-Type": "application/json",
+    ...options.headers,
+  };
+
+  const token = getAuthToken();
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const response = await fetch(`${API_BASE}${endpoint}`, {
+    ...options,
+    cache: "no-store",
+    headers,
+  });
+
+  if (response.status === 401) {
+    // Token expired, clear auth but DON'T reload - let calling code handle it
+    authToken = null;
+    localStorage.removeItem("auth_token");
+    showToast("Session expired. Please log in.", "error");
+    throw new Error("Unauthorized");
+  }
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(data.error || `HTTP ${response.status}`);
+  }
+
+  return data;
+}
+
+function getAuthToken() {
+  return authToken || localStorage.getItem("auth_token");
+}
+
+function setAuthToken(token) {
+  authToken = token;
+  if (token) {
+    localStorage.setItem("auth_token", token);
+  } else {
+    localStorage.removeItem("auth_token");
   }
 }
 
-function saveData() {
+/* ===== Authentication ===== */
+
+async function checkAuth() {
+  const token = getAuthToken();
+  if (!token) return false;
+
+  try {
+    // Verify token by fetching user profile
+    await apiRequest("/auth/me");
+    authToken = token;
+    return true;
+  } catch {
+    setAuthToken(null);
+    // Redirect to login page
+    window.location.href = 'auth.html';
+    return false;
+  }
+}
+
+async function login(email, password) {
+  const data = await apiRequest("/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ email, password }),
+  });
+  setAuthToken(data.token);
+  return data.user;
+}
+
+async function register(email, password, name) {
+  const data = await apiRequest("/auth/register", {
+    method: "POST",
+    body: JSON.stringify({ email, password, name }),
+  });
+  setAuthToken(data.token);
+  return data.user;
+}
+
+function logout() {
+  setAuthToken(null);
+  transactions = [];
+  refresh();
+  showToast("Logged out successfully", "success");
+}
+
+/* ===== Data Loading ===== */
+
+async function loadCategories() {
+  try {
+    categories = await apiRequest("/categories");
+    populateCategorySelects();
+  } catch (e) {
+    console.warn("Failed to load categories:", e);
+    // Fallback to hardcoded
+    categories = [];
+  }
+}
+
+function populateCategorySelects() {
+  const expenseCategories = categories.filter(c => c.type === "EXPENSE");
+  const incomeCategories = categories.filter(c => c.type === "INCOME");
+
+  [categoryInput, editCategory, filterCategory].forEach(select => {
+    if (!select) return;
+    const isFilter = select === filterCategory;
+    const firstOption = select.options[0];
+    select.innerHTML = "";
+    if (isFilter) {
+      select.add(new Option("All Categories", "all"));
+    }
+    expenseCategories.forEach(c => select.add(new Option(c.name, c.id)));
+    incomeCategories.forEach(c => select.add(new Option(c.name, c.id)));
+  });
+}
+
+async function loadData() {
+  try {
+    const result = await apiRequest("/transactions?limit=100");
+    transactions = result.data || result;
+    return transactions;
+  } catch (e) {
+    console.warn("API load failed, falling back to localStorage:", e);
+    // Fallback to localStorage
+    try {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      const parsed = stored ? JSON.parse(stored) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+      console.warn("Load error:", e);
+      return [];
+    }
+  }
+}
+
+async function saveData() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(transactions));
+}
+
+/* ===== CRUD: Add ===== */
+
+async function addTransaction(event) {
+  event.preventDefault();
+
+  const name = nameInput.value.trim();
+  const rawAmount = amountInput.value.trim();
+  const categoryId = categoryInput.value;
+  const typeEl = $('input[name="type"]:checked');
+  const type = typeEl ? typeEl.value.toUpperCase() : "EXPENSE";
+  let date = dateInput.value || todayStr();
+
+  let valid = true;
+
+  if (!name) {
+    showError(nameError, "Please enter a name.");
+    valid = false;
+  } else {
+    hideError(nameError);
+  }
+
+  if (!rawAmount) {
+    showError(amountError, "Please enter an amount.");
+    valid = false;
+  } else {
+    const parsed = parseFloat(rawAmount);
+    if (isNaN(parsed) || parsed <= 0) {
+      showError(amountError, "Amount must be a positive number.");
+      valid = false;
+    } else {
+      hideError(amountError);
+    }
+  }
+
+  if (!categoryId || categoryId === "all") {
+    showToast("Please select a category", "error");
+    return;
+  }
+
+  if (!valid) return;
+
+  const amount = Math.abs(parseFloat(rawAmount));
+
+  try {
+    const newTransaction = await apiRequest("/transactions", {
+      method: "POST",
+      body: JSON.stringify({
+        title: name,
+        amount,
+        type,
+        categoryId,
+        transactionDate: date,
+      }),
+    });
+
+    transactions.unshift(newTransaction);
+    saveData();
+    refresh();
+    showToast(`"${name}" added as ${type.toLowerCase()}`, "success");
+
+    nameInput.value = "";
+    amountInput.value = "";
+    dateInput.value = todayStr();
+    nameInput.focus();
+  } catch (e) {
+    showToast(e.message || "Failed to add transaction", "error");
+  }
+}
+
+/* ===== CRUD: Delete ===== */
+
+function requestDelete(id) {
+  deleteTargetId = id;
+  confirmModal.classList.add("open");
+}
+
+async function confirmDelete() {
+  if (deleteTargetId === null) return;
+  const item = transactions.find((t) => t.id === deleteTargetId);
+  try {
+    await apiRequest(`/transactions/${deleteTargetId}`, { method: "DELETE" });
+    transactions = transactions.filter((t) => t.id !== deleteTargetId);
+    deleteTargetId = null;
+    saveData();
+    refresh();
+    closeConfirmModal();
+    showToast(`"${item ? item.title : "Transaction"}" deleted`, "error");
+  } catch (e) {
+    showToast(e.message || "Failed to delete", "error");
+  }
+}
+
+function closeConfirmModal() {
+  confirmModal.classList.remove("open");
+  deleteTargetId = null;
+}
+
+/* ===== CRUD: Edit ===== */
+
+function requestEdit(id) {
+  const t = transactions.find((tr) => tr.id === id);
+  if (!t) return;
+  editTargetId = id;
+  editName.value = t.title;
+  editAmount.value = t.amount;
+  editCategory.value = t.categoryId;
+  editDate.value = t.transactionDate.split("T")[0];
+  const radio = $(`input[name="editType"][value="${t.type.toLowerCase()}"]`);
+  if (radio) radio.checked = true;
+  hideError(editNameError);
+  hideError(editAmountError);
+  editModal.classList.add("open");
+}
+
+async function saveEdit(event) {
+  event.preventDefault();
+  const name = editName.value.trim();
+  const rawAmount = editAmount.value.trim();
+  const categoryId = editCategory.value;
+  const typeEl = $('input[name="editType"]:checked');
+  const type = typeEl ? typeEl.value.toUpperCase() : "EXPENSE";
+  const date = editDate.value;
+
+  let valid = true;
+  if (!name) { showError(editNameError, "Please enter a name."); valid = false; }
+  else { hideError(editNameError); }
+
+  if (!rawAmount) { showError(editAmountError, "Please enter an amount."); valid = false; }
+  else {
+    const parsed = parseFloat(rawAmount);
+    if (isNaN(parsed) || parsed <= 0) { showError(editAmountError, "Positive number required."); valid = false; }
+    else { hideError(editAmountError); }
+  }
+  if (!valid) return;
+
+  const amount = Math.abs(parseFloat(rawAmount));
+
+  try {
+    const updated = await apiRequest(`/transactions/${editTargetId}`, {
+      method: "PUT",
+      body: JSON.stringify({ title: name, amount, categoryId, type, transactionDate: date }),
+    });
+
+    const idx = transactions.findIndex((t) => t.id === editTargetId);
+    if (idx !== -1) {
+      transactions[idx] = updated;
+      saveData();
+      refresh();
+      closeEditModal();
+      showToast(`"${name}" updated`, "success");
+    }
+  } catch (e) {
+    showToast(e.message || "Failed to update", "error");
+  }
+}
+
+function closeEditModal() {
+  editModal.classList.remove("open");
+  editTargetId = null;
+}
+
+/* ===== Budget ===== */
+
+async function loadBudget() {
+  try {
+    const now = new Date();
+    const month = now.getMonth() + 1;
+    const year = now.getFullYear();
+    const budget = await apiRequest(`/budgets/current?month=${month}&year=${year}`);
+    if (budget) {
+      budgetLimitInput.value = budget.limit || 50000;
+      updateBudgetDisplay(budget);
+    }
+  } catch (e) {
+    console.warn("Budget load failed:", e);
+  }
+}
+
+async function updateBudgetLimit() {
+  const val = parseFloat(budgetLimitInput.value);
+  if (isNaN(val) || val <= 0) {
+    showToast("Enter a valid budget limit.", "error");
+    return;
+  }
+  try {
+    const now = new Date();
+    await apiRequest("/budgets", {
+      method: "POST",
+      body: JSON.stringify({ amount: val, month: now.getMonth() + 1, year: now.getFullYear() }),
+    });
+    showToast(`Monthly limit set to ${fmt(val)}`, "success");
+    loadBudget();
+  } catch (e) {
+    showToast(e.message || "Failed to set budget", "error");
+  }
+}
+
+function updateBudgetDisplay(budget) {
+  if (!budget) return;
+  budgetSpent.textContent = fmt(budget.spent);
+  budgetLimit.textContent = fmt(budget.limit);
+  budgetPercent.textContent = `${budget.percent}%`;
+  budgetFill.style.width = `${budget.percent}%`;
+  budgetFill.classList.toggle("danger", budget.isOverBudget);
+  budgetFill.setAttribute("aria-valuenow", budget.percent);
+}
+
+/* ===== Income Goal ===== */
+
+async function loadIncomeGoal() {
+  try {
+    const goal = await apiRequest("/income-goals/current");
+    if (goal) {
+      incomeGoalInput.value = goal.goal;
+      updateIncomeGoalDisplay(goal);
+    }
+  } catch (e) {
+    console.warn("Income goal load failed:", e);
+  }
+}
+
+async function setIncomeGoal() {
+  const val = parseFloat(incomeGoalInput.value);
+  if (isNaN(val) || val <= 0) {
+    showToast("Enter a valid income target.", "error");
+    return;
+  }
+  try {
+    const now = new Date();
+    await apiRequest("/income-goals", {
+      method: "POST",
+      body: JSON.stringify({ amount: val, month: now.getMonth() + 1, year: now.getFullYear() }),
+    });
+    showToast(`Monthly income target set to ${fmt(val)}`, "success");
+    loadIncomeGoal();
+  } catch (e) {
+    showToast(e.message || "Failed to set income goal", "error");
+  }
+}
+
+function updateIncomeGoalDisplay(goal) {
+  if (!goal) return;
+  incomeEarned.textContent = fmt(goal.actual);
+  incomeGoalDisplay.textContent = fmt(goal.goal);
+  incomeGoalPercent.textContent = `${goal.progress}%`;
+  incomeGoalFill.style.width = `${goal.progress}%`;
+  incomeGoalFill.setAttribute("aria-valuenow", goal.progress);
 }
 
 /* ===== Theme ===== */
@@ -148,7 +532,7 @@ function fmt(num) {
 }
 
 function fmtSigned(amount, type) {
-  const prefix = type === "income" ? "+" : "-";
+  const prefix = type === "INCOME" ? "+" : "-";
   return `${prefix}${fmt(amount)}`;
 }
 
@@ -186,76 +570,13 @@ function updateDashboard() {
   let totalIncome = 0;
   let totalExpense = 0;
   for (const t of transactions) {
-    if (t.type === "income") totalIncome += t.amount;
+    if (t.type === "INCOME") totalIncome += t.amount;
     else totalExpense += t.amount;
   }
   const balance = totalIncome - totalExpense;
   balanceDisplay.textContent = fmt(balance);
   incomeDisplay.textContent = fmt(totalIncome);
   expenseDisplay.textContent = fmt(totalExpense);
-}
-
-/* ===== Budget Update ===== */
-
-function updateBudget() {
-  const now = new Date();
-  const month = now.getMonth();
-  const year = now.getFullYear();
-  let monthlyExpense = 0;
-  for (const t of transactions) {
-    if (t.type === "expense") {
-      const td = new Date(t.date + "T00:00:00");
-      if (td.getMonth() === month && td.getFullYear() === year) {
-        monthlyExpense += t.amount;
-      }
-    }
-  }
-  const limit = parseFloat(budgetLimitInput.value) || 50000;
-  const percent = Math.min((monthlyExpense / limit) * 100, 100);
-  budgetSpent.textContent = fmt(monthlyExpense);
-  budgetLimit.textContent = fmt(limit);
-  budgetPercent.textContent = `${Math.round(percent)}%`;
-  budgetFill.style.width = `${percent}%`;
-  budgetFill.classList.toggle("danger", percent > 80);
-  budgetFill.setAttribute("aria-valuenow", Math.round(percent));
-}
-
-/* ===== Income Goal ===== */
-
-const INCOME_GOAL_KEY = "expense-tracker-income-goal";
-
-function loadIncomeGoal() {
-  try {
-    const val = localStorage.getItem(INCOME_GOAL_KEY);
-    return val ? parseFloat(val) : 100000;
-  } catch { return 100000; }
-}
-
-function saveIncomeGoal(val) {
-  localStorage.setItem(INCOME_GOAL_KEY, String(val));
-}
-
-function updateIncomeGoal() {
-  const now = new Date();
-  const month = now.getMonth();
-  const year = now.getFullYear();
-  let monthlyIncome = 0;
-  for (const t of transactions) {
-    if (t.type === "income") {
-      const td = new Date(t.date + "T00:00:00");
-      if (td.getMonth() === month && td.getFullYear() === year) {
-        monthlyIncome += t.amount;
-      }
-    }
-  }
-  const goal = loadIncomeGoal();
-  incomeGoalInput.value = goal;
-  const percent = Math.min((monthlyIncome / goal) * 100, 100);
-  incomeEarned.textContent = fmt(monthlyIncome);
-  incomeGoalDisplay.textContent = fmt(goal);
-  incomeGoalPercent.textContent = `${Math.round(percent)}%`;
-  incomeGoalFill.style.width = `${percent}%`;
-  incomeGoalFill.setAttribute("aria-valuenow", Math.round(percent));
 }
 
 /* ===== Filter & Sort ===== */
@@ -268,12 +589,12 @@ function getFilteredTransactions() {
   const sort = sortBy.value;
 
   let filtered = transactions.filter((t) => {
-    if (type !== "all" && t.type !== type) return false;
-    if (cat !== "all" && t.category !== cat) return false;
-    if (period === "today" && !isToday(t.date)) return false;
-    if (period === "week" && !isThisWeek(t.date)) return false;
-    if (period === "month" && !isThisMonth(t.date)) return false;
-    if (search && !t.name.toLowerCase().includes(search)) return false;
+    if (type !== "all" && t.type !== type.toUpperCase()) return false;
+    if (cat !== "all" && t.categoryId !== cat) return false;
+    if (period === "today" && !isToday(t.transactionDate.split("T")[0])) return false;
+    if (period === "week" && !isThisWeek(t.transactionDate.split("T")[0])) return false;
+    if (period === "month" && !isThisMonth(t.transactionDate.split("T")[0])) return false;
+    if (search && !t.title.toLowerCase().includes(search)) return false;
     return true;
   });
 
@@ -281,8 +602,8 @@ function getFilteredTransactions() {
   filtered.sort((a, b) => {
     let va, vb;
     if (field === "date") {
-      va = a.date;
-      vb = b.date;
+      va = a.transactionDate;
+      vb = b.transactionDate;
     } else {
       va = a.amount;
       vb = b.amount;
@@ -315,23 +636,24 @@ function renderTransactions() {
     li.className = "transaction-item";
     li.dataset.id = t.id;
 
-    const catIcon = CATEGORY_ICONS[t.category] || "fa-circle";
-    const dt = t.date ? new Date(t.date + "T00:00:00").toLocaleDateString([], { dateStyle: "medium" }) : "";
+    const cat = categories.find(c => c.id === t.categoryId);
+    const catIcon = cat?.icon || CATEGORY_ICONS[t.category?.name] || "fa-circle";
+    const dt = t.transactionDate ? new Date(t.transactionDate).toLocaleDateString([], { dateStyle: "medium" }) : "";
 
     li.innerHTML = `
-      <div class="transaction-category-icon ${t.type}"><i class="fas ${catIcon}"></i></div>
+      <div class="transaction-category-icon ${t.type.toLowerCase()}"><i class="fas ${catIcon}"></i></div>
       <div class="transaction-info">
-        <div class="transaction-name">${escHtml(t.name)}</div>
+        <div class="transaction-name">${escHtml(t.title)}</div>
         <div class="transaction-meta">
           <span>${dt}</span>
-          <span class="transaction-type-badge ${t.type}">${t.type}</span>
-          <span>${escHtml(t.category)}</span>
+          <span class="transaction-type-badge ${t.type.toLowerCase()}">${t.type}</span>
+          <span>${cat ? escHtml(cat.name) : escHtml(t.categoryId)}</span>
         </div>
       </div>
-      <span class="transaction-amount ${t.type}">${fmtSigned(t.amount, t.type)}</span>
+      <span class="transaction-amount ${t.type.toLowerCase()}">${fmtSigned(t.amount, t.type)}</span>
       <div class="transaction-actions">
-        <button class="btn-sm-icon" data-edit="${t.id}" aria-label="Edit ${t.name}"><i class="fas fa-pen"></i></button>
-        <button class="btn-sm-icon danger" data-delete="${t.id}" aria-label="Delete ${t.name}"><i class="fas fa-trash"></i></button>
+        <button class="btn-sm-icon" data-edit="${t.id}" aria-label="Edit ${t.title}"><i class="fas fa-pen"></i></button>
+        <button class="btn-sm-icon danger" data-delete="${t.id}" aria-label="Delete ${t.title}"><i class="fas fa-trash"></i></button>
       </div>
     `;
 
@@ -347,141 +669,6 @@ function escHtml(str) {
   return div.innerHTML;
 }
 
-/* ===== CRUD: Add ===== */
-
-function addTransaction(event) {
-  event.preventDefault();
-
-  const name = nameInput.value.trim();
-  const rawAmount = amountInput.value.trim();
-  const category = categoryInput.value;
-  const typeEl = $('input[name="type"]:checked');
-  const type = typeEl ? typeEl.value : "expense";
-  let date = dateInput.value || todayStr();
-
-  let valid = true;
-
-  if (!name) {
-    showError(nameError, "Please enter a name.");
-    valid = false;
-  } else {
-    hideError(nameError);
-  }
-
-  if (!rawAmount) {
-    showError(amountError, "Please enter an amount.");
-    valid = false;
-  } else {
-    const parsed = parseFloat(rawAmount);
-    if (isNaN(parsed) || parsed <= 0) {
-      showError(amountError, "Amount must be a positive number.");
-      valid = false;
-    } else {
-      hideError(amountError);
-    }
-  }
-
-  if (!valid) return;
-
-  const amount = Math.abs(parseFloat(rawAmount));
-
-  transactions.unshift({
-    id: Date.now(),
-    name,
-    amount,
-    category,
-    type,
-    date,
-  });
-
-  saveData();
-  refresh();
-  showToast(`"${name}" added as ${type}`, "success");
-
-  nameInput.value = "";
-  amountInput.value = "";
-  dateInput.value = todayStr();
-  nameInput.focus();
-}
-
-/* ===== CRUD: Delete ===== */
-
-function requestDelete(id) {
-  deleteTargetId = id;
-  confirmModal.classList.add("open");
-}
-
-function confirmDelete() {
-  if (deleteTargetId === null) return;
-  const item = transactions.find((t) => t.id === deleteTargetId);
-  transactions = transactions.filter((t) => t.id !== deleteTargetId);
-  deleteTargetId = null;
-  saveData();
-  refresh();
-  closeConfirmModal();
-  showToast(`"${item ? item.name : "Transaction"}" deleted`, "error");
-}
-
-function closeConfirmModal() {
-  confirmModal.classList.remove("open");
-  deleteTargetId = null;
-}
-
-/* ===== CRUD: Edit ===== */
-
-function requestEdit(id) {
-  const t = transactions.find((tr) => tr.id === id);
-  if (!t) return;
-  editTargetId = id;
-  editName.value = t.name;
-  editAmount.value = t.amount;
-  editCategory.value = t.category;
-  editDate.value = t.date;
-  const radio = $(`input[name="editType"][value="${t.type}"]`);
-  if (radio) radio.checked = true;
-  hideError(editNameError);
-  hideError(editAmountError);
-  editModal.classList.add("open");
-}
-
-function saveEdit(event) {
-  event.preventDefault();
-  const name = editName.value.trim();
-  const rawAmount = editAmount.value.trim();
-  const category = editCategory.value;
-  const typeEl = $('input[name="editType"]:checked');
-  const type = typeEl ? typeEl.value : "expense";
-  const date = editDate.value;
-
-  let valid = true;
-  if (!name) { showError(editNameError, "Please enter a name."); valid = false; }
-  else { hideError(editNameError); }
-
-  if (!rawAmount) { showError(editAmountError, "Please enter an amount."); valid = false; }
-  else {
-    const parsed = parseFloat(rawAmount);
-    if (isNaN(parsed) || parsed <= 0) { showError(editAmountError, "Positive number required."); valid = false; }
-    else { hideError(editAmountError); }
-  }
-  if (!valid) return;
-
-  const amount = Math.abs(parseFloat(rawAmount));
-
-  const idx = transactions.findIndex((t) => t.id === editTargetId);
-  if (idx !== -1) {
-    transactions[idx] = { ...transactions[idx], name, amount, category, type, date };
-    saveData();
-    refresh();
-    closeEditModal();
-    showToast(`"${name}" updated`, "success");
-  }
-}
-
-function closeEditModal() {
-  editModal.classList.remove("open");
-  editTargetId = null;
-}
-
 /* ===== Charts ===== */
 
 function buildCharts() {
@@ -492,10 +679,11 @@ function buildCharts() {
 function buildPieChart() {
   const canvas = $("#pieChart");
   const empty = $("#pieEmpty");
-  const expenses = transactions.filter((t) => t.type === "expense");
+  const expenses = transactions.filter((t) => t.type === "EXPENSE");
   const grouped = {};
   for (const t of expenses) {
-    grouped[t.category] = (grouped[t.category] || 0) + t.amount;
+    const catName = categories.find(c => c.id === t.categoryId)?.name || t.categoryId;
+    grouped[catName] = (grouped[catName] || 0) + t.amount;
   }
   const labels = Object.keys(grouped);
   const data = Object.values(grouped);
@@ -557,10 +745,10 @@ function buildBarChart() {
   for (const m of months) {
     let inc = 0, exp = 0;
     for (const t of transactions) {
-      const td = new Date(t.date + "T00:00:00");
+      const td = new Date(t.transactionDate);
       const key = `${td.getFullYear()}-${String(td.getMonth() + 1).padStart(2, "0")}`;
       if (key === m.key) {
-        if (t.type === "income") inc += t.amount;
+        if (t.type === "INCOME") inc += t.amount;
         else exp += t.amount;
         if (t.amount > 0) hasData = true;
       }
@@ -634,8 +822,11 @@ function exportAsCSV() {
     showToast("No transactions to export.", "error");
     return;
   }
-  const headers = ["Name", "Amount", "Category", "Type", "Date"];
-  const rows = transactions.map((t) => [t.name, t.amount, t.category, t.type, t.date]);
+  const headers = ["Date", "Title", "Amount", "Type", "Category"];
+  const rows = transactions.map((t) => {
+    const cat = categories.find(c => c.id === t.categoryId);
+    return [t.transactionDate.split("T")[0], t.title, t.amount, t.type, cat?.name || t.categoryId];
+  });
   const csv = [headers.join(","), ...rows.map((r) => r.map((v) => `"${v}"`).join(","))].join("\n");
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
   const link = document.createElement("a");
@@ -665,10 +856,11 @@ function exportAsPDF() {
     doc.line(14, 33, 196, 33);
     let y = 40;
     doc.setFontSize(9);
-    doc.text("Name", 14, y);
-    doc.text("Amount", 80, y);
-    doc.text("Category", 120, y);
-    doc.text("Date", 160, y);
+    doc.text("Date", 14, y);
+    doc.text("Title", 40, y);
+    doc.text("Amount", 100, y);
+    doc.text("Type", 130, y);
+    doc.text("Category", 150, y);
     y += 6;
     doc.line(14, y - 1, 196, y - 1);
     for (const t of transactions) {
@@ -676,10 +868,12 @@ function exportAsPDF() {
         doc.addPage();
         y = 20;
       }
-      doc.text(t.name.substring(0, 20), 14, y);
-      doc.text(`${t.type === "income" ? "+" : "-"}PKR ${t.amount}`, 80, y);
-      doc.text(t.category, 120, y);
-      doc.text(t.date, 160, y);
+      const cat = categories.find(c => c.id === t.categoryId);
+      doc.text(t.transactionDate.split("T")[0], 14, y);
+      doc.text(t.title.substring(0, 20), 40, y);
+      doc.text(`${t.type === "INCOME" ? "+" : "-"}PKR ${t.amount}`, 100, y);
+      doc.text(t.type, 130, y);
+      doc.text(cat?.name || t.categoryId, 150, y);
       y += 6;
     }
     doc.save(`expenses_${todayStr()}.pdf`);
@@ -693,8 +887,8 @@ function exportAsPDF() {
 
 function refresh() {
   updateDashboard();
-  updateIncomeGoal();
-  updateBudget();
+  loadBudget();
+  loadIncomeGoal();
   renderTransactions();
   buildCharts();
 }
@@ -704,8 +898,8 @@ function refresh() {
 transactionList.addEventListener("click", (e) => {
   const delBtn = e.target.closest("[data-delete]");
   const editBtn = e.target.closest("[data-edit]");
-  if (delBtn) requestDelete(Number(delBtn.dataset.delete));
-  if (editBtn) requestEdit(Number(editBtn.dataset.edit));
+  if (delBtn) requestDelete(delBtn.dataset.delete);
+  if (editBtn) requestEdit(editBtn.dataset.edit);
 });
 
 /* ===== Filter/Sort Events ===== */
@@ -731,27 +925,10 @@ editForm.addEventListener("submit", saveEdit);
 editModal.addEventListener("click", (e) => { if (e.target === editModal) closeEditModal(); });
 
 /* ===== Income Goal ===== */
-incomeGoalSetBtn.addEventListener("click", () => {
-  const val = parseFloat(incomeGoalInput.value);
-  if (isNaN(val) || val <= 0) {
-    showToast("Enter a valid income target.", "error");
-    return;
-  }
-  saveIncomeGoal(val);
-  updateIncomeGoal();
-  showToast(`Monthly income target set to ${fmt(val)}`, "success");
-});
+incomeGoalSetBtn.addEventListener("click", setIncomeGoal);
 
 /* ===== Budget ===== */
-budgetSetBtn.addEventListener("click", () => {
-  const val = parseFloat(budgetLimitInput.value);
-  if (isNaN(val) || val <= 0) {
-    showToast("Enter a valid budget limit.", "error");
-    return;
-  }
-  updateBudget();
-  showToast(`Monthly limit set to ${fmt(val)}`, "success");
-});
+budgetSetBtn.addEventListener("click", updateBudgetLimit);
 
 /* ===== Export ===== */
 exportCSV.addEventListener("click", exportAsCSV);
@@ -760,7 +937,21 @@ exportPDF.addEventListener("click", exportAsPDF);
 /* ===== Theme ===== */
 themeToggle.addEventListener("click", toggleTheme);
 
-/* ===== Keyboard: Enter on filter period ===== */
+/* ===== Logout ===== */
+const logoutBtn = $("#logoutBtn");
+if (logoutBtn) {
+  logoutBtn.addEventListener("click", logout);
+}
+
+function logout() {
+  localStorage.removeItem("auth_token");
+  authToken = null;
+  transactions = [];
+  showToast("Logged out successfully", "success");
+  setTimeout(() => window.location.href = "auth.html", 1000);
+}
+
+/* ===== Keyboard: Escape to close modals ===== */
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     if (confirmModal.classList.contains("open")) closeConfirmModal();
@@ -774,9 +965,15 @@ themeToggle.addEventListener("click", function chartThemeRefresh() {
 });
 
 /* ===== Initialisation ===== */
-(function init() {
+(async function init() {
   initTheme();
   dateInput.value = todayStr();
-  transactions = loadData();
+  
+  // Check authentication (redirects to auth.html if not logged in)
+  const isLoggedIn = await checkAuth();
+  if (!isLoggedIn) return;
+  
+  await loadCategories();
+  transactions = await loadData();
   refresh();
 })();
