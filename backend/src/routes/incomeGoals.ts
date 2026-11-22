@@ -69,19 +69,20 @@ router.get('/:id', async (req: AuthenticatedRequest, res) => {
 });
 
 router.post('/', validate(createIncomeGoalSchema), async (req: AuthenticatedRequest, res) => {
-  const existing = await prisma.incomeGoal.findFirst({
-    where: {
-      userId: req.user!.id,
-      month: req.body.month,
-      year: req.body.year,
-    },
+  const key = {
+    userId: req.user!.id,
+    month: req.body.month,
+    year: req.body.year,
+  };
+  const existing = await prisma.incomeGoal.findUnique({
+    where: { userId_month_year: key },
   });
-  if (existing) throw new AppError(409, 'Income goal already exists for this month');
-
-  const goal = await prisma.incomeGoal.create({
-    data: { ...req.body, userId: req.user!.id },
+  const goal = await prisma.incomeGoal.upsert({
+    where: { userId_month_year: key },
+    update: { amount: req.body.amount },
+    create: { ...req.body, userId: req.user!.id },
   });
-  res.status(201).json(goal);
+  res.status(existing ? 200 : 201).json(goal);
 });
 
 router.put('/:id', validate(createIncomeGoalSchema.partial()), async (req: AuthenticatedRequest, res) => {

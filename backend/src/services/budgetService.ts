@@ -28,14 +28,9 @@ export async function createBudget(
   userId: string,
   data: { categoryId?: string; amount: number; month: number; year: number }
 ) {
-  // Check for duplicate
   const existing = await prisma.budget.findFirst({
     where: { userId, categoryId: data.categoryId || null, month: data.month, year: data.year },
   });
-
-  if (existing) {
-    throw new AppError(409, 'Budget already exists for this category/month');
-  }
 
   if (data.categoryId) {
     const category = await prisma.category.findFirst({
@@ -44,10 +39,20 @@ export async function createBudget(
     if (!category) throw new AppError(400, 'Invalid category');
   }
 
-  return prisma.budget.create({
+  if (existing) {
+    const budget = await prisma.budget.update({
+      where: { id: existing.id },
+      data: { amount: data.amount },
+      include: { category: true },
+    });
+    return { budget, created: false };
+  }
+
+  const budget = await prisma.budget.create({
     data: { ...data, userId },
     include: { category: true },
   });
+  return { budget, created: true };
 }
 
 export async function updateBudget(

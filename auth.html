@@ -296,8 +296,9 @@
     </div>
   </div>
 
+  <script src="api-config.js"></script>
   <script>
-    const API_BASE = 'http://localhost:3000/api/v1';
+    const API_BASE = window.EXPENSE_TRACKER_API_BASE || 'http://localhost:3000/api/v1';
     const $ = (sel) => document.querySelector(sel);
     const $$ = (sel) => [...document.querySelectorAll(sel)];
 

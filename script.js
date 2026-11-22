@@ -6,7 +6,7 @@
 
 /* ===== Configuration ===== */
 const STORAGE_KEY = "expense-tracker-premium";
-const API_BASE = "http://localhost:3000/api/v1";
+const API_BASE = window.EXPENSE_TRACKER_API_BASE || "http://localhost:3000/api/v1";
 
 let authToken = null;
 let isOnline = true;
@@ -65,6 +65,18 @@ const budgetLimit = $("#budgetLimit");
 const budgetPercent = $("#budgetPercent");
 const budgetLimitInput = $("#budgetLimitInput");
 const budgetSetBtn = $("#budgetSetBtn");
+const historyMonthSelect = $("#historyMonthSelect");
+const historyError = $("#historyError");
+const historySpent = $("#historySpent");
+const historyBudgetLimit = $("#historyBudgetLimit");
+const historyBudgetRemaining = $("#historyBudgetRemaining");
+const historyRemainingLabel = $("#historyRemainingLabel");
+const historyBudgetUsage = $("#historyBudgetUsage");
+const historyComparison = $("#historyComparison");
+const historyProgressTrack = $(".history-progress-track");
+const historyProgressFill = $("#historyProgressFill");
+const historyCategoryList = $("#historyCategoryList");
+const historyEmpty = $("#historyEmpty");
 
 const incomeEarned = $("#incomeEarned");
 const incomeGoalDisplay = $("#incomeGoalDisplay");
@@ -422,6 +434,7 @@ async function updateBudgetLimit() {
     });
     showToast(`Monthly limit set to ${fmt(val)}`, "success");
     loadBudget();
+    loadMonthlyHistory();
   } catch (e) {
     showToast(e.message || "Failed to set budget", "error");
   }
@@ -435,6 +448,153 @@ function updateBudgetDisplay(budget) {
   budgetFill.style.width = `${budget.percent}%`;
   budgetFill.classList.toggle("danger", budget.isOverBudget);
   budgetFill.setAttribute("aria-valuenow", budget.percent);
+}
+
+/* ===== Monthly Spending History ===== */
+
+function monthKey(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function populateHistoryMonths() {
+  const selectedMonth = historyMonthSelect.value;
+  const now = new Date();
+  historyMonthSelect.innerHTML = "";
+
+  for (let offset = 0; offset < 12; offset++) {
+    const date = new Date(now.getFullYear(), now.getMonth() - offset, 1);
+    const option = document.createElement("option");
+    option.value = monthKey(date);
+    option.textContent = date.toLocaleString("default", { month: "long", year: "numeric" });
+    historyMonthSelect.appendChild(option);
+  }
+
+  const previousMonth = monthKey(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+  historyMonthSelect.value = selectedMonth || previousMonth;
+}
+
+async function loadMonthlyHistory() {
+  populateHistoryMonths();
+  historyError.hidden = true;
+  await renderMonthlyHistory();
+}
+
+function getHistoryComparison(selectedKey, spent, previousSpent) {
+  const [year, month] = selectedKey.split("-").map(Number);
+  const previousDate = new Date(year, month - 2, 1);
+  const previousKey = monthKey(previousDate);
+  const hasPreviousMonth = [...historyMonthSelect.options].some(option => option.value === previousKey);
+
+  if (!hasPreviousMonth) return "No previous-month comparison available.";
+
+  const previousLabel = previousDate.toLocaleString("default", { month: "long" });
+
+  if (previousSpent === 0) {
+    return spent === 0
+      ? `No expenses this month or in ${previousLabel}.`
+      : `No expenses were recorded in ${previousLabel}.`;
+  }
+
+  const change = Math.round(Math.abs((spent - previousSpent) / previousSpent) * 100);
+  if (change === 0) return `Spending was about the same as ${previousLabel}.`;
+  return `You spent ${change}% ${spent > previousSpent ? "more" : "less"} than ${previousLabel}.`;
+}
+
+function renderHistoryCategories(entries, totalSpent) {
+  historyCategoryList.innerHTML = "";
+  historyEmpty.hidden = entries.length > 0;
+  if (entries.length === 0) return;
+
+  const maxAmount = entries[0].amount;
+  entries.forEach((entry, index) => {
+    const share = totalSpent > 0 ? (entry.amount / totalSpent) * 100 : 0;
+    const row = document.createElement("div");
+    row.className = "history-category";
+
+    const header = document.createElement("div");
+    header.className = "history-category-header";
+
+    const name = document.createElement("span");
+    name.className = "history-category-name";
+    name.textContent = entry.name;
+
+    const marker = document.createElement("span");
+    marker.className = "history-category-marker";
+    if (entries.length === 1) {
+      marker.textContent = "Only category";
+    } else if (index === 0) {
+      marker.textContent = "Most";
+    } else if (index === entries.length - 1) {
+      marker.textContent = "Least";
+    }
+
+    const amount = document.createElement("strong");
+    amount.className = "history-category-amount";
+    amount.textContent = fmt(entry.amount);
+
+    const details = document.createElement("div");
+    details.className = "history-category-details";
+    details.append(name, marker, amount);
+
+    const shareLabel = document.createElement("span");
+    shareLabel.className = "history-category-share";
+    shareLabel.textContent = `${share.toFixed(1)}% of spending`;
+
+    const meter = document.createElement("div");
+    meter.className = "history-category-track";
+    const fill = document.createElement("div");
+    fill.className = "history-category-fill";
+    fill.style.width = `${maxAmount > 0 ? (entry.amount / maxAmount) * 100 : 0}%`;
+    meter.appendChild(fill);
+
+    header.append(details, shareLabel);
+    row.append(header, meter);
+    historyCategoryList.appendChild(row);
+  });
+}
+
+async function renderMonthlyHistory() {
+  const selectedKey = historyMonthSelect.value;
+  if (!selectedKey) return;
+
+  const [year, month] = selectedKey.split("-").map(Number);
+  historyError.hidden = true;
+  try {
+    const history = await apiRequest(`/reports/monthly-history?month=${month}&year=${year}`);
+    if (historyMonthSelect.value !== selectedKey) return;
+
+    const totalSpent = Number(history.spent) || 0;
+    const limit = history.budgetLimit === null ? null : Number(history.budgetLimit);
+    const percent = limit > 0 ? (totalSpent / limit) * 100 : 0;
+
+    historySpent.textContent = fmt(totalSpent);
+    historyBudgetLimit.textContent = limit === null ? "Not set" : fmt(limit);
+    historyRemainingLabel.textContent = limit !== null && totalSpent > limit ? "Over budget" : "Remaining";
+    historyBudgetRemaining.textContent = limit === null
+      ? "Not set"
+      : fmt(Math.abs(limit - totalSpent));
+    historyBudgetUsage.textContent = limit === null
+      ? "No overall budget was set for this month."
+      : `${percent.toFixed(1)}% of the budget used`;
+    historyProgressFill.style.width = `${Math.min(percent, 100)}%`;
+    historyProgressFill.classList.toggle("danger", percent > 100);
+    historyProgressTrack.setAttribute("aria-valuenow", String(Math.min(Math.round(percent), 100)));
+    historyComparison.textContent = getHistoryComparison(
+      selectedKey,
+      totalSpent,
+      Number(history.previousSpent) || 0
+    );
+
+    const categories = (history.categories || [])
+      .map(item => ({ name: item.name || "Other", amount: Number(item.amount) || 0 }))
+      .sort((a, b) => b.amount - a.amount);
+    renderHistoryCategories(categories, totalSpent);
+    historyError.hidden = true;
+  } catch (error) {
+    console.error("Monthly history load failed:", error);
+    historyError.textContent = "Could not load this month's budget history. Please try again.";
+    historyError.hidden = false;
+  }
 }
 
 /* ===== Income Goal ===== */
@@ -889,6 +1049,7 @@ function refresh() {
   updateDashboard();
   loadBudget();
   loadIncomeGoal();
+  loadMonthlyHistory();
   renderTransactions();
   buildCharts();
 }
@@ -929,6 +1090,7 @@ incomeGoalSetBtn.addEventListener("click", setIncomeGoal);
 
 /* ===== Budget ===== */
 budgetSetBtn.addEventListener("click", updateBudgetLimit);
+historyMonthSelect.addEventListener("change", renderMonthlyHistory);
 
 /* ===== Export ===== */
 exportCSV.addEventListener("click", exportAsCSV);

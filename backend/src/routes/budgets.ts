@@ -37,8 +37,8 @@ router.get('/:id', async (req: AuthenticatedRequest, res) => {
 });
 
 router.post('/', validate(createBudgetSchema), async (req: AuthenticatedRequest, res) => {
-  const budget = await createBudget(req.user!.id, req.body);
-  res.status(201).json(budget);
+  const { budget, created } = await createBudget(req.user!.id, req.body);
+  res.status(created ? 201 : 200).json(budget);
 });
 
 router.put('/:id', validate(updateBudgetSchema), async (req: AuthenticatedRequest, res) => {

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { authMiddleware, AuthenticatedRequest } from '../middleware/auth';
 import { validateQuery } from '../middleware/validation';
-import { getMonthlySummary, getCategoryBreakdown, getBudgetUtilizationHistory, getIncomeGoalProgress, getCurrentMonthDashboard, exportTransactions } from '../services/reportService';
+import { getMonthlySummary, getMonthlySpendingHistory, getCategoryBreakdown, getBudgetUtilizationHistory, getIncomeGoalProgress, getCurrentMonthDashboard, exportTransactions } from '../services/reportService';
 import { z } from 'zod';
 
 const router = Router();
@@ -11,6 +11,15 @@ router.use(authMiddleware);
 router.get('/dashboard', async (req: AuthenticatedRequest, res) => {
   const dashboard = await getCurrentMonthDashboard(req.user!.id);
   res.json(dashboard);
+});
+
+router.get('/monthly-history', validateQuery(z.object({
+  month: z.coerce.number().min(1).max(12),
+  year: z.coerce.number().min(2020).max(2100),
+})), async (req: AuthenticatedRequest, res) => {
+  const { month, year } = req.query;
+  const history = await getMonthlySpendingHistory(req.user!.id, Number(month), Number(year));
+  res.json(history);
 });
 
 router.get('/monthly', validateQuery(z.object({

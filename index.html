@@ -18,6 +18,7 @@
 
   <!-- jsPDF -->
   <script defer src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="api-config.js"></script>
 
   <link rel="stylesheet" href="style.css" />
 </head>
@@ -238,6 +239,51 @@
       </div>
     </section>
 
+    <!-- ===== Monthly Spending History ===== -->
+    <section class="card" aria-label="Monthly spending history">
+      <div class="history-header">
+        <div>
+          <h2 class="section-title"><i class="fas fa-calendar-alt"></i> Monthly Spending History</h2>
+          <p class="history-description">Review your budget and see which categories cost the most.</p>
+        </div>
+        <div class="history-month-picker">
+          <label for="historyMonthSelect">Month</label>
+          <select id="historyMonthSelect" aria-label="Select month to review"></select>
+        </div>
+      </div>
+
+      <p class="history-error" id="historyError" role="alert" hidden></p>
+
+      <div class="history-stats" aria-live="polite">
+        <div class="history-stat">
+          <span>Spent</span>
+          <strong id="historySpent">PKR 0</strong>
+        </div>
+        <div class="history-stat">
+          <span>Budget limit</span>
+          <strong id="historyBudgetLimit">Not set</strong>
+        </div>
+        <div class="history-stat">
+          <span id="historyRemainingLabel">Remaining</span>
+          <strong id="historyBudgetRemaining">Not set</strong>
+        </div>
+      </div>
+
+      <div class="history-budget-progress">
+        <div class="history-progress-meta">
+          <span id="historyBudgetUsage">Choose a month to view budget usage.</span>
+          <span id="historyComparison"></span>
+        </div>
+        <div class="history-progress-track" role="progressbar" aria-label="Monthly budget used" aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+          <div class="history-progress-fill" id="historyProgressFill"></div>
+        </div>
+      </div>
+
+      <h3 class="history-subtitle">Spending by category</h3>
+      <div class="history-category-list" id="historyCategoryList"></div>
+      <p class="history-empty" id="historyEmpty" hidden>No expenses recorded for this month.</p>
+    </section>
+
     <!-- ===== Search, Filter & Sort ===== -->
     <section class="card" aria-label="Search and filter transactions">
       <div class="toolbar">
@@ -308,6 +354,6 @@
 
   </main>
 
-  <script defer src="script.js"></script>
+  <script defer src="script.js?v=monthly-history"></script>
 </body>
 </html>

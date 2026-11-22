@@ -22,6 +22,57 @@ export async function getMonthlySummary(userId: string, months = 12) {
   return monthlyData;
 }
 
+export async function getMonthlySpendingHistory(userId: string, month: number, year: number) {
+  const monthStart = new Date(year, month - 1, 1);
+  const monthEnd = new Date(year, month, 1);
+  const previousMonthStart = new Date(year, month - 2, 1);
+
+  const expenseWhere = {
+    userId,
+    type: TransactionType.EXPENSE,
+  };
+
+  const [categoryTotals, previousExpenses, overallBudget] = await Promise.all([
+    prisma.transaction.groupBy({
+      by: ['categoryId'],
+      where: {
+        ...expenseWhere,
+        transactionDate: { gte: monthStart, lt: monthEnd },
+      },
+      _sum: { amount: true },
+    }),
+    prisma.transaction.aggregate({
+      where: {
+        ...expenseWhere,
+        transactionDate: { gte: previousMonthStart, lt: monthStart },
+      },
+      _sum: { amount: true },
+    }),
+    prisma.budget.findFirst({
+      where: { userId, categoryId: null, month, year },
+    }),
+  ]);
+
+  const categoryRecords = await prisma.category.findMany({
+    where: { id: { in: categoryTotals.map(item => item.categoryId) } },
+    select: { id: true, name: true },
+  });
+
+  const categories = categoryTotals
+    .map(item => ({
+      name: categoryRecords.find(category => category.id === item.categoryId)?.name || 'Other',
+      amount: item._sum.amount?.toNumber() || 0,
+    }))
+    .sort((a, b) => b.amount - a.amount);
+
+  return {
+    spent: categories.reduce((total, category) => total + category.amount, 0),
+    budgetLimit: overallBudget?.amount.toNumber() ?? null,
+    previousSpent: previousExpenses._sum.amount?.toNumber() || 0,
+    categories,
+  };
+}
+
 export async function getCategoryBreakdown(
   userId: string,
   type: TransactionType,

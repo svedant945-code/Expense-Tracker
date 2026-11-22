@@ -1,3 +1,5 @@
+require('express-async-errors');
+
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
